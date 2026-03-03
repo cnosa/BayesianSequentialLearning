@@ -1,3 +1,4 @@
+# kalman.py
 from Filters.bayesian import BayesianFilter
 import numpy as np
 from scipy import linalg
@@ -12,19 +13,23 @@ class KalmanFilter(BayesianFilter):
     def log_gaussian_density(y, mu, S):
         d = len(y)
         diff = y - mu
-        try:
-            c, lower = linalg.cho_factor(S, check_finite=False)
-            alpha = linalg.cho_solve((c, lower), diff)
-            logdet = 2 * np.sum(np.log(np.diag(c)))
-        except np.linalg.LinAlgError:
-            alpha = np.linalg.solve(S, diff)
-            logdet = np.log(np.linalg.det(S))
+
+        # jitter for numerical stability
+        jitter = 1e-8
+        S = 0.5 * (S + S.T) + jitter * np.eye(d)
+
+        c, lower = linalg.cho_factor(S, check_finite=False)
+        alpha = linalg.cho_solve((c, lower), diff)
+        logdet = 2.0 * np.sum(np.log(np.diag(c)))
 
         return -0.5 * (diff @ alpha + logdet + d * np.log(2 * np.pi))
 
     def predict(self):
-        F = self.model.f_x(self.m, self.theta)
-        Q = self.model.Q(self.m, self.theta)
+        try:
+            F = self.model.f_x(self.m, self.theta)
+            Q = self.model.Q(self.m, self.theta)
+        except NotImplementedError:
+            raise ValueError("KalmanFilter requires Gaussian transition model")
 
         self.m_minus = self.model.f(self.m, self.theta)
         self.P_minus = F @ self.P @ F.T + Q
@@ -36,20 +41,28 @@ class KalmanFilter(BayesianFilter):
         mu = self.model.h(self.m_minus, self.theta)
         S = H @ self.P_minus @ H.T + R
 
+        # log likelihood 
         self.log_likelihood += self.log_gaussian_density(y, mu, S)
 
-        try:
-            c, lower = linalg.cho_factor(S, check_finite=False)
-            S_inv = linalg.cho_solve((c, lower), np.eye(S.shape[0]))
-        except np.linalg.LinAlgError:
-            S_inv = np.linalg.inv(S)
+        # Cholesky with jitter 
+        d = S.shape[0]
+        jitter = 1e-8
+        S = 0.5 * (S + S.T) + jitter * np.eye(d)
 
-        K = self.P_minus @ H.T @ S_inv
+        c, lower = linalg.cho_factor(S, check_finite=False)
+
+        PHt = self.P_minus @ H.T
+        K = linalg.cho_solve((c, lower), PHt.T).T
+
         innovation = y - mu
-
         self.m = self.m_minus + K @ innovation
-        self.P = self.P_minus - K @ H @ self.P_minus
 
-        # numerical stability
+        # Joseph form
+        I = np.eye(self.P_minus.shape[0])
+        self.P = (
+            (I - K @ H) @ self.P_minus @ (I - K @ H).T
+            + K @ R @ K.T
+        )
+
         self.P = 0.5 * (self.P + self.P.T)
-        self.P += 1e-8 * np.eye(self.P.shape[0])
+        self.P += 1e-10 * np.eye(self.P.shape[0])

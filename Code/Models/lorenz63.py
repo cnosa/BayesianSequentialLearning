@@ -1,5 +1,11 @@
+# lorenz63.py
 import numpy as np
 from Models.ssm import StateSpaceModel
+from Models.transition import GaussianTransition
+from Models.observation import GaussianObservation
+from Models.priors import GaussianPrior
+
+
 
 class Lorenz63SSM(StateSpaceModel):
     """
@@ -18,53 +24,64 @@ class Lorenz63SSM(StateSpaceModel):
         Gamma=1e-2 * np.eye(3),
         H=None,
     ):
-        super().__init__(d=3, m=3 if H is None else H.shape[0])
 
-        self.sigma = sigma
-        self.rho = rho
-        self.beta = beta
-        self.dt = dt
+        H = np.eye(3) if H is None else np.atleast_2d(H)
 
-        self.m0 = np.asarray(m0)
-        self.P0 = np.asarray(P0)
+        d = 3
+        m = H.shape[0]
 
-        self.Sigma = np.atleast_2d(Sigma)
-        self.Gamma = np.atleast_2d(Gamma)
+        Sigma = np.atleast_2d(Sigma)
+        Gamma = np.atleast_2d(Gamma)
 
-        self.H = np.eye(3) if H is None else np.atleast_2d(H)
+        # ---------- Transition ----------
+        def f(x, theta=None):
+            x1, x2, x3 = x
+            dx1 = sigma * (x2 - x1)
+            dx2 = x1 * (rho - x3) - x2
+            dx3 = x1 * x2 - beta * x3
+            return x + dt * np.array([dx1, dx2, dx3])
 
-    # ---------- Dynamics ----------
-    def f(self, x, theta=None):
-        x1, x2, x3 = x
-        dx1 = self.sigma * (x2 - x1)
-        dx2 = x1 * (self.rho - x3) - x2
-        dx3 = x1 * x2 - self.beta * x3
-        return x + self.dt * np.array([dx1, dx2, dx3])
+        def f_x(x, theta=None):
+            x1, x2, x3 = x
+            J = np.array([
+                [-sigma, sigma, 0.0],
+                [rho - x3, -1.0, -x1],
+                [x2, x1, -beta]
+            ])
+            return np.eye(3) + dt * J
 
-    def h(self, x, theta=None):
-        return self.H @ x
+        def Q_func(x, theta=None):
+            return Sigma
 
-    # ---------- Jacobians ----------
-    def f_x(self, x, theta=None):
-        x1, x2, x3 = x
-        J = np.array([
-            [-self.sigma, self.sigma, 0.0],
-            [self.rho - x3, -1.0, -x1],
-            [x2, x1, -self.beta]
-        ])
-        return np.eye(3) + self.dt * J
+        transition = GaussianTransition(
+            f=f,
+            Q_func=Q_func,
+            d=d,
+            f_x=f_x
+        )
 
-    def h_x(self, x, theta=None):
-        return self.H
+        # ---------- Observation ----------
+        def h(x, theta=None):
+            return H @ x
 
-    # ---------- Covariances ----------
-    def Q(self, x=None, theta=None):
-        return self.Sigma
+        def h_x(x, theta=None):
+            return H
 
-    def R(self, x=None, theta=None):
-        return self.Gamma
+        def R_func(x, theta=None):
+            return Gamma
 
-    # ---------- Prior ----------
-    def prior(self):
-        return self.m0.copy(), self.P0.copy()
+        observation = GaussianObservation(
+            h=h,
+            R_func=R_func,
+            m=m,
+            h_x=h_x
+        )
 
+        # ---------- Prior ----------
+        prior = GaussianPrior(
+            m0=np.atleast_1d(m0),
+            P0=np.atleast_2d(P0)
+        )
+
+        # ---------- Build full SSM ----------
+        super().__init__(transition, observation, prior)

@@ -1,3 +1,4 @@
+# ukf.py
 from Filters.bayesian import BayesianFilter
 import numpy as np
 from scipy import linalg
@@ -8,7 +9,7 @@ class UnscentedKalmanFilter(BayesianFilter):
     """
 
     def __init__(self, model, theta=None,
-                 alpha=1e-3, beta=2.0, kappa=0.0):
+                 alpha=0.1, beta=2.0, kappa=0.0):
 
         super().__init__(model, theta)
 
@@ -33,22 +34,21 @@ class UnscentedKalmanFilter(BayesianFilter):
     def log_gaussian_density(y, mu, S):
         d = len(y)
         diff = y - mu
-        try:
-            c, lower = linalg.cho_factor(S, check_finite=False)
-            alpha = linalg.cho_solve((c, lower), diff)
-            logdet = 2 * np.sum(np.log(np.diag(c)))
-        except np.linalg.LinAlgError:
-            alpha = np.linalg.solve(S, diff)
-            logdet = np.log(np.linalg.det(S))
+
+        jitter = 1e-8
+        S = 0.5 * (S + S.T) + jitter * np.eye(d)
+
+        c, lower = linalg.cho_factor(S, check_finite=False)
+        alpha = linalg.cho_solve((c, lower), diff)
+        logdet = 2.0 * np.sum(np.log(np.diag(c)))
 
         return -0.5 * (diff @ alpha + logdet + d * np.log(2 * np.pi))
 
     # --------------------------------------------------
     def _sigma_points(self, m, P):
-        try:
-            A = np.linalg.cholesky(P)
-        except np.linalg.LinAlgError:
-            A = np.linalg.cholesky(P + 1e-8 * np.eye(self.d))
+        P = 0.5 * (P + P.T)
+        jitter = 1e-10
+        A = np.linalg.cholesky(P + jitter * np.eye(self.d))
 
         X = np.empty((self.d, 2 * self.d + 1))
         X[:, 0] = m
@@ -62,6 +62,7 @@ class UnscentedKalmanFilter(BayesianFilter):
 
     # --------------------------------------------------
     def predict(self):
+               
         X = self._sigma_points(self.m, self.P)
 
         X_hat = np.zeros_like(X)
@@ -73,7 +74,12 @@ class UnscentedKalmanFilter(BayesianFilter):
             + self.wim * np.sum(X_hat[:, 1:], axis=1)
         )
 
-        P_minus = self.model.Q(m_minus, self.theta).astype(float)
+        try:
+            Q = self.model.Q(m_minus, self.theta).astype(float)
+        except NotImplementedError:
+            raise ValueError("UKF requires Gaussian transition model")
+
+        P_minus = Q.copy()
         for i in range(2 * self.d + 1):
             diff = X_hat[:, i] - m_minus
             w = self.w0c if i == 0 else self.wim
@@ -101,7 +107,7 @@ class UnscentedKalmanFilter(BayesianFilter):
             w = self.w0c if i == 0 else self.wim
             S += w * np.outer(dy, dy)
 
-        S = 0.5 * (S + S.T)
+        S = 0.5 * (S + S.T) + 1e-8 * np.eye(self.m_obs)
 
         self.log_likelihood += self.log_gaussian_density(y, mu, S)
 
@@ -112,13 +118,12 @@ class UnscentedKalmanFilter(BayesianFilter):
             w = self.w0c if i == 0 else self.wim
             C += w * np.outer(dx, dy)
 
-        try:
-            cho = np.linalg.cholesky(S)
-            K = linalg.cho_solve((cho, True), C.T).T
-        except np.linalg.LinAlgError:
-            K = C @ np.linalg.inv(S)
+        c, lower = linalg.cho_factor(S, check_finite=False)
+        K = linalg.cho_solve((c, lower), C.T).T
 
         self.m = self.m_minus + K @ (y - mu)
-        self.P = self.P_minus - K @ C.T
+
+        self.P = self.P_minus - K @ S @ K.T
         self.P = 0.5 * (self.P + self.P.T)
+        self.P += 1e-10 * np.eye(self.d)
         

@@ -1,80 +1,109 @@
+# ssm.py
 import numpy as np
+from Models.transition import TransitionModel
+from Models.observation import ObservationModel
+from Models.priors import PriorModel
+
+
 
 class StateSpaceModel:
+
     """
-    Class for discrete space state models:
-        x_{k+1} = f(x_{k}, theta) + q_{k+1}
-        y_{k+1}     = h(x_{k+1}, theta) + r_{k+1}
-        q_{k+1} ~ Normal(0, Q(theta))
-        r_{k+1} ~ Normal(0, R(theta))
+    General discrete-time state space model:
+
+        x_{k+1} ~ p(x_{k+1} | x_k, theta)
+        y_k     ~ p(y_k | x_k, theta)
     """
 
-    def __init__(self, d, m):
-        self.d = d  # state dimension
-        self.m = m  # observation dimension
+    def __init__(self, transition, observation, prior):
+        self.transition = transition
+        self.observation = observation
+        self.prior = prior
+        if not hasattr(transition, "d"):
+            raise ValueError("Transition model must define state dimension d")
+        if not hasattr(observation, "m"):
+            raise ValueError("Observation model must define observation dimension m")
+        self.d = transition.d
+        self.m = observation.m
 
-    # Evolution and observation (deterministic)
+    @staticmethod
+    def _log_gaussian_density(x, mu, S):
+        x = np.atleast_1d(x)
+        mu = np.atleast_1d(mu)
+
+        d = len(x)
+        diff = x - mu
+
+        S = 0.5 * (S + S.T)
+        jitter = 1e-10
+        S = S + jitter * np.eye(d)
+
+        try:
+            c = np.linalg.cholesky(S)
+        except np.linalg.LinAlgError:
+            S = S + 1e-8 * np.eye(d)
+            c = np.linalg.cholesky(S)
+        alpha = np.linalg.solve(c.T, np.linalg.solve(c, diff))
+        logdet = 2.0 * np.sum(np.log(np.diag(c)))
+
+        return -0.5 * (diff @ alpha + logdet + d * np.log(2 * np.pi))
+
+    # wrapper methods for compatibility
+
     def f(self, x, theta=None):
-        raise NotImplementedError
+        return self.transition.f(x, theta)
 
     def h(self, x, theta=None):
-        raise NotImplementedError
-
-    # Jacobians ( KF / EKF)
+        return self.observation.h(x, theta)
+    
     def f_x(self, x, theta=None):
-        raise NotImplementedError
+        return self.transition.f_x(x, theta)
 
     def h_x(self, x, theta=None):
-        raise NotImplementedError
+        return self.observation.h_x(x, theta)
 
-    # Covariances
     def Q(self, x=None, theta=None):
-        raise NotImplementedError
+        if hasattr(self.transition, "_Q"):
+            return self.transition._Q(x, theta)
+        raise NotImplementedError("Covariance transition is not implemented")
 
     def R(self, x=None, theta=None):
-        raise NotImplementedError
-
-    # Prior
-    def prior(self):
-        """
-        Returns (m0, P0) such that x0 ~ Normal(m0, P0)
-        """
-        raise NotImplementedError
-
-    # Simulation
-    def sample_process_noise(self, x=None, theta=None):
-        return np.random.multivariate_normal(
-            mean=np.zeros(self.d),
-            cov=self.Q(x, theta)
-        )
-
-    def sample_observation_noise(self, x=None, theta=None):
-        return np.random.multivariate_normal(
-            mean=np.zeros(self.m),
-            cov=self.R(x, theta)
-        )
+        if hasattr(self.observation, "_R"):
+            return self.observation._R(x, theta)
+        raise NotImplementedError("Covariance observation is not implemented")
 
     def sample_transition(self, x, theta=None):
-        return self.f(x, theta) + self.sample_process_noise(x, theta)
+        return self.transition.sample(x, theta)
 
     def sample_observation(self, x, theta=None):
-        return self.h(x, theta) + self.sample_observation_noise(x, theta)
+        return self.observation.sample(x, theta)
 
+    def log_transition_density(self, x_next, x_prev, theta=None):
+        return self.transition.log_density(x_next, x_prev, theta)
+
+    def log_observation_density(self, y, x, theta=None):
+        return self.observation.log_density(y, x, theta)
+
+    def sample_prior(self, N=1, theta=None):
+        return self.prior.sample(N, theta)
+
+    def log_prior_density(self, x, theta=None):
+        return self.prior.log_density(x, theta)
+    
     def simulate(self, T, theta=None):
         """
-        Simulate a trajectory (X, Y)
+        Simulate trajectory (X, Y)
         """
         X = np.zeros((T + 1, self.d))
         Y = np.zeros((T, self.m))
 
-        m0, _ = self.prior()
-        X[0] = m0
+        # sample prior (general)
+        x0 = self.sample_prior(N=1, theta=theta)
+        X[0] = np.atleast_1d(x0)[0]
 
         for t in range(T):
             X[t + 1] = self.sample_transition(X[t], theta)
             Y[t] = self.sample_observation(X[t + 1], theta)
 
         return X, Y
-    
 
-import numpy as np

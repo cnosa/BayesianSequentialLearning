@@ -1,3 +1,4 @@
+# particle.py
 from Filters.bayesian import BayesianFilter
 import numpy as np
 from scipy import linalg
@@ -5,7 +6,7 @@ from scipy.special import logsumexp
 
 class ParticleFilter(BayesianFilter):
     """
-    Particle Filter for StateSpaceModel
+    Bootstrap Particle Filter for StateSpaceModel
     """
 
     def __init__(self, model, N, theta=None, resample_threshold=0.15):
@@ -18,10 +19,8 @@ class ParticleFilter(BayesianFilter):
         self.m_obs = model.m
 
         # inicialization of particules from prior
-        m0, P0 = model.prior()
-        self.particles = np.random.multivariate_normal(
-            mean=m0, cov=P0, size=N
-        )
+        self.particles = model.sample_prior(N, theta)
+
 
         self.logw = np.zeros(N) - np.log(N)
 
@@ -36,21 +35,6 @@ class ParticleFilter(BayesianFilter):
 
 
     # --------------------------------------------------
-    @staticmethod
-    def log_gaussian_density(y, mu, S):
-        d = len(y)
-        diff = y - mu
-        try:
-            c = np.linalg.cholesky(S)
-            alpha = np.linalg.solve(c.T, np.linalg.solve(c, diff))
-            logdet = 2 * np.sum(np.log(np.diag(c)))
-        except np.linalg.LinAlgError:
-            alpha = np.linalg.solve(S, diff)
-            logdet = np.log(np.linalg.det(S))
-
-        return -0.5 * (diff @ alpha + logdet + d * np.log(2 * np.pi))
-
-    # --------------------------------------------------
     def predict(self):
         for i in range(self.N):
             self.particles[i] = self.model.sample_transition(
@@ -61,16 +45,17 @@ class ParticleFilter(BayesianFilter):
     def update(self, y):
         logw_new = np.zeros(self.N)
 
-        R = self.model.R(None, self.theta)
-
         for i in range(self.N):
-            y_pred = self.model.h(self.particles[i], self.theta)
-            logw_new[i] = self.logw[i] + self.log_gaussian_density(
-                y, y_pred, R
-            )
+            logw_new[i] = self.logw[i] + self.model.log_observation_density(y, self.particles[i], self.theta)
 
-        # normalización estable
+        # stable normalization
         logZ = logsumexp(logw_new)
+
+        if not np.isfinite(logZ):
+            # reset weights if logZ is not finite (e.g., all particles have zero likelihood)
+            self.logw[:] = -np.log(self.N)
+            return
+        
         self.logw = logw_new - logZ
         self.log_likelihood += logZ
 
@@ -98,6 +83,7 @@ class ParticleFilter(BayesianFilter):
 
         self.m = mean
         self.P = 0.5 * (cov + cov.T)
+        self.P += 1e-10 * np.eye(self.d)
 
     # --------------------------------------------------
     def update_step(self, y):

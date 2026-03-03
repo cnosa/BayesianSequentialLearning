@@ -1,5 +1,11 @@
+# lokta_volterra.py
 import numpy as np
 from Models.ssm import StateSpaceModel
+from Models.transition import GaussianTransition
+from Models.observation import GaussianObservation, NonlinearProductObservation
+from Models.priors import GaussianPrior, LogNormalPrior
+
+
 
 class LotkaVolterraSSM(StateSpaceModel):
     """
@@ -20,7 +26,6 @@ class LotkaVolterraSSM(StateSpaceModel):
         Gamma=1e-2 * np.eye(2),
         H=None,
     ):
-        super().__init__(d=2, m=2 if H is None else H.shape[0])
 
         self.alpha = alpha
         self.beta = beta
@@ -28,44 +33,126 @@ class LotkaVolterraSSM(StateSpaceModel):
         self.gamma = gamma
         self.dt = dt
 
-        self.m0 = np.asarray(m0)
-        self.P0 = np.asarray(P0)
+        Sigma = np.atleast_2d(Sigma)
+        Gamma = np.atleast_2d(Gamma)
 
-        self.Sigma = np.atleast_2d(Sigma)
-        self.Gamma = np.atleast_2d(Gamma)
+        H = np.eye(2) if H is None else np.atleast_2d(H)
 
-        self.H = np.eye(2) if H is None else np.atleast_2d(H)
+        d = 2
+        m = H.shape[0]
 
-    # ---------- Dynamics ----------
-    def f(self, x, theta=None):
-        x1, x2 = x
-        dx1 = self.alpha * x1 - self.beta * x1 * x2
-        dx2 = self.delta * x1 * x2 - self.gamma * x2
-        return x + self.dt * np.array([dx1, dx2])
+        # ---------- Transition ----------
+        def f(x, theta=None):
+            x1, x2 = x
+            dx1 = alpha * x1 - beta * x1 * x2
+            dx2 = delta * x1 * x2 - gamma * x2
+            return x + dt * np.array([dx1, dx2])
 
-    def h(self, x, theta=None):
-        return self.H @ x
+        def f_x(x, theta=None):
+            x1, x2 = x
+            J = np.array([
+                [alpha - beta * x2, -beta * x1],
+                [delta * x2, delta * x1 - gamma]
+            ])
+            return np.eye(2) + dt * J
 
-    # ---------- Jacobians ----------
-    def f_x(self, x, theta=None):
-        x1, x2 = x
-        J = np.array([
-            [self.alpha - self.beta * x2, -self.beta * x1],
-            [self.delta * x2, self.delta * x1 - self.gamma]
-        ])
-        return np.eye(2) + self.dt * J
+        def Q_func(x, theta=None):
+            return Sigma
 
-    def h_x(self, x, theta=None):
-        return self.H
+        transition = GaussianTransition(
+            f=f,
+            Q_func=Q_func,
+            d=d,
+            f_x=f_x
+        )
 
-    # ---------- Covariances ----------
-    def Q(self, x=None, theta=None):
-        return self.Sigma
+        # ---------- Observation ----------
+        def h(x, theta=None):
+            return H @ x
 
-    def R(self, x=None, theta=None):
-        return self.Gamma
+        def h_x(x, theta=None):
+            return H
 
-    # ---------- Prior ----------
-    def prior(self):
-        return self.m0.copy(), self.P0.copy()
+        def R_func(x, theta=None):
+            return Gamma
 
+        observation = GaussianObservation(
+            h=h,
+            R_func=R_func,
+            m=m,
+            h_x=h_x
+        )
+
+        # ---------- Prior ----------
+        prior = GaussianPrior(
+            m0=np.atleast_1d(m0),
+            P0=np.atleast_2d(P0)
+        )
+
+        # ---------- Build full SSM ----------
+        super().__init__(transition, observation, prior)
+
+
+class LotkaVolterraProductSSM(StateSpaceModel):
+    """
+    Lotka–Volterra with nonlinear product observation
+    and LogNormal prior.
+    """
+
+    def __init__(
+        self,
+        alpha=1.0,
+        beta=0.5,
+        delta=0.5,
+        gamma=1.0,
+        dt=0.01,
+        mean_log=np.array([0.0, 0.0]),
+        cov_log=0.25 * np.eye(2),
+        Sigma=1e-4 * np.eye(2),
+        sigma_obs=0.1,
+    ):
+
+        d = 2
+
+        Sigma = np.atleast_2d(Sigma)
+
+        # ---------- Transition ----------
+        def f(x, theta=None):
+            x1, x2 = x
+            dx1 = alpha * x1 - beta * x1 * x2
+            dx2 = delta * x1 * x2 - gamma * x2
+            return x + dt * np.array([dx1, dx2])
+
+        def f_x(x, theta=None):
+            x1, x2 = x
+            J = np.array([
+                [alpha - beta * x2, -beta * x1],
+                [delta * x2, delta * x1 - gamma]
+            ])
+            return np.eye(2) + dt * J
+
+        def Q_func(x, theta=None):
+            return Sigma
+
+        transition = GaussianTransition(
+            f=f,
+            Q_func=Q_func,
+            d=d,
+            f_x=f_x
+        )
+
+        # ---------- Observation ----------
+        observation = NonlinearProductObservation(
+            sigma=sigma_obs
+        )
+
+        # ---------- LogNormal Prior ----------
+        prior = LogNormalPrior(
+            mean_log=mean_log,
+            cov_log=cov_log
+        )
+
+        super().__init__(
+            transition=transition,
+            observation=observation,
+            prior=prior)

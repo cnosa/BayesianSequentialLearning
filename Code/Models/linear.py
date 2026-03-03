@@ -1,43 +1,62 @@
+# linear.py
 import numpy as np
 from Models.ssm import StateSpaceModel
+from Models.transition import GaussianTransition
+from Models.observation import GaussianObservation
+from Models.priors import GaussianPrior
+
 
 class LinearGaussianSSM(StateSpaceModel):
+
     def __init__(self, m0, P0, A, H, Sigma, Gamma):
+
         A = np.atleast_2d(A)
         H = np.atleast_2d(H)
+        Sigma = np.atleast_2d(Sigma)
+        Gamma = np.atleast_2d(Gamma)
 
-        super().__init__(d=A.shape[0], m=H.shape[0])
+        d = A.shape[0]
+        m = H.shape[0]
 
-        self.m0 = np.atleast_1d(m0)
-        self.P0 = np.atleast_2d(P0)
+        # ---------- Transition ----------
+        def f(x, theta=None):
+            return A @ x
 
-        self.A = A
-        self.H = H
-        self.Sigma = np.atleast_2d(Sigma)
-        self.Gamma = np.atleast_2d(Gamma)
+        def f_x(x, theta=None):
+            return A
 
-    # Evolution and observation (deterministic)
-    def f(self, x, theta=None):
-        return self.A @ x
+        def Q_func(x, theta=None):
+            return Sigma
 
-    def h(self, x, theta=None):
-        return self.H @ x
+        transition = GaussianTransition(
+            f=f,
+            Q_func=Q_func,
+            d=d,
+            f_x=f_x
+        )
 
-    # Jacobians
-    def f_x(self, x=None, theta=None):
-        return self.A
+        # ---------- Observation ----------
+        def h(x, theta=None):
+            return H @ x
 
-    def h_x(self, x=None, theta=None):
-        return self.H
+        def h_x(x, theta=None):
+            return H
 
-    # Covariances
-    def Q(self, x=None, theta=None):
-        return self.Sigma
+        def R_func(x, theta=None):
+            return Gamma
 
-    def R(self, x=None, theta=None):
-        return self.Gamma
+        observation = GaussianObservation(
+            h=h,
+            R_func=R_func,
+            m=m,
+            h_x=h_x
+        )
 
-    # Prior
-    def prior(self):
-        return self.m0.copy(), self.P0.copy()
+        # ---------- Prior ----------
+        prior = GaussianPrior(
+            m0=np.atleast_1d(m0),
+            P0=np.atleast_2d(P0)
+        )
 
+        # ---------- Build SSM ----------
+        super().__init__(transition, observation, prior)
