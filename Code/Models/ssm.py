@@ -90,20 +90,52 @@ class StateSpaceModel:
     def log_prior_density(self, x, theta=None):
         return self.prior.log_density(x, theta)
     
+
+
+    def _validate_state(self, x):
+
+        if not np.all(np.isfinite(x)):
+            raise FloatingPointError("State contains NaN or Inf")
+
+        if np.linalg.norm(x) > 1e6:
+            raise FloatingPointError("State exploded numerically")
+
+        return x
+    
+
     def simulate(self, T, theta=None):
+
         """
-        Simulate trajectory (X, Y)
+        Simulate trajectory (X, Y) with numerical stability checks
         """
+
         X = np.zeros((T + 1, self.d))
         Y = np.zeros((T, self.m))
 
-        # sample prior (general)
         x0 = self.sample_prior(N=1, theta=theta)
-        X[0] = np.atleast_1d(x0)[0]
+        x = np.atleast_1d(x0)[0]
+
+        x = self._validate_state(x)
+
+        X[0] = x
 
         for t in range(T):
-            X[t + 1] = self.sample_transition(X[t], theta)
-            Y[t] = self.sample_observation(X[t + 1], theta)
+
+            try:
+
+                x = self.sample_transition(x, theta)
+
+                x = self._validate_state(x)
+
+                y = self.sample_observation(x, theta)
+
+            except FloatingPointError:
+
+                # restart trajectory if unstable
+                return self.simulate(T, theta)
+
+            X[t + 1] = x
+            Y[t] = y
 
         return X, Y
 
