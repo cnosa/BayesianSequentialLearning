@@ -148,8 +148,8 @@ class LotkaVolterraProductSSM(StateSpaceModel):
 
         # ---------- LogNormal Prior ----------
         prior = LogNormalPrior(
-            mean_log=mean_log,
-            cov_log=cov_log
+            mean=mean_log,
+            cov=cov_log
         )
 
         super().__init__(
